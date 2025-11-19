@@ -11,10 +11,8 @@ class MyDecentralized:
 
         ### TODO: Initialize other parameters needed in your algorithm
         # examples:
-        # self.W = None   # shape (K, M)
-        # self.b = None   # shape (K,)
-        self.W = None
-        self.b = None
+        self.W = None   # shape (K, M)
+        self.b = None   # shape (K,)
         self.classes = None
 
     def train(self, trainX, trainY):
@@ -22,22 +20,25 @@ class MyDecentralized:
             TODO: train a multi-class linear classifier using LP/ILP.
                   Store learned parameters you will use in predict().
         '''
+        # Implement multi-class SVM using cvxpy
         K = self.K
         self.classes = list(np.unique(trainY))  # get unique class labels
         N, M = trainX.shape
-        W = cp.Variable((K, M))
+        # initialize cvxpy variables
+        W = cp.Variable((K, M))     # weight matrix
         b = cp.Variable(K)
-        S = cp.Variable(N, nonneg=True)
-        U = cp.Variable((K, M), nonneg=True)
+        S = cp.Variable(N, nonneg=True) # slack variables
+        U = cp.Variable((K, M), nonneg=True)    # L1 norm upper bound variables
         constraints = []
         for i in range(N):
             for j in range(K):
                 idx = self.classes.index(trainY[i])
                 if self.classes[j] != trainY[i]:
                     constraints.append(W[idx,:]@trainX[i,:] + b[idx] >= W[j,:]@trainX[i,:] + b[j] + 1 - S[i])
+        # Contraints: L1 norm constraints for W to limit weight magnitude. Wikipedia claims this helps the estimation stability.
         constraints.append(W <= U)
         constraints.append(W >= -U)
-        objective = cp.Minimize(cp.norm(S, 1) + 0.01 * cp.norm(U, 1))
+        objective = cp.Minimize(cp.norm(S, 1) + 0.01 * cp.norm(U, 1))   # objective function
         prob = cp.Problem(objective, constraints)
         prob.solve()
         self.W = W.value
@@ -51,7 +52,6 @@ class MyDecentralized:
         # predY = ...
         Y = self.W @ testX.T + self.b[:, np.newaxis]
         predY = np.argmax(Y, axis=0)
-        # predY = np.round(predY)
         predY = np.array(self.classes)[predY]
         return predY
 
@@ -59,7 +59,6 @@ class MyDecentralized:
         predY = self.predict(testX)
         accuracy = accuracy_score(testY, predY)
         return accuracy
-
 
 ##########################################################################
 # --- Task 2 & Task 3 ---
@@ -78,7 +77,7 @@ class MyFeatureCompression:
         # TODO: add any state you need (e.g., bit candidates, a base classifier)
         self.classes = None
 
-    def centralized_compression_train(self, X, B_tot):
+    def image_compression_train(self, X, B_tot):
         ''' Train centralized compression parameters  
         Args:
             X: (N, M) data matrix
@@ -91,15 +90,13 @@ class MyFeatureCompression:
         b = cp.Variable(M, nonneg=True, integer=True)
         X_bar = np.mean(X, axis=0)
         objective = cp.Maximize(cp.sum(X_bar@b))
-        # objective = cp.Maximize(cp.sum(X@b))
-        # X_log = np.log2(X + 1e-8)  # add a small constant to avoid log(0)
-        # objective = cp.Maximize(cp.sum(X_log@b))
+        # objective = cp.Maximize(cp.sum(X@b))      # basically same as above
         constraints = [cp.sum(b) <= B_tot, b <= 8]
         prob = cp.Problem(objective, constraints)
         prob.solve()
         return b.value
 
-    def centralized_compression(self, X, bit_allocation):
+    def image_compression(self, X, bit_allocation):
         ''' Apply centralized compression to data X using bit_allocation
         Args:
             X: (N, M) data matrix
@@ -115,16 +112,17 @@ class MyFeatureCompression:
                 X_compressed[:, i] = 0
             else:
                 levels = 2 ** bits
-                min_val = np.min(X[:, i])
-                max_val = np.max(X[:, i])
+                min_val = 0
+                max_val = 255
                 delta = (max_val - min_val) / (levels - 1)
                 X_compressed[:, i] = np.round(X[:, i] / levels) * delta
         return X_compressed
 
+    # test function
     def compression_test(self, B_tot, trainX, trainY, testX, testY):
-        bit_allocation = self.centralized_compression_train(trainX, B_tot)
-        trainX_compressed = self.centralized_compression(trainX, bit_allocation=bit_allocation)
-        testX_compressed = self.centralized_compression(testX, bit_allocation=bit_allocation)
+        bit_allocation = self.image_compression_train(trainX, B_tot)
+        trainX_compressed = self.image_compression(trainX, bit_allocation=bit_allocation)
+        testX_compressed = self.image_compression(testX, bit_allocation=bit_allocation)
         classifier = MyDecentralized(self.K)
         classifier.train(trainX_compressed, trainY)
         test_accuracy = classifier.evaluate(testX_compressed, testY)
@@ -205,23 +203,55 @@ class MyFeatureCompression:
               information during training or allocation decisions.
             - Plotting: used for "accuracy vs k" and to compare with centralized at matched B_tot.
         """
-        b_value_list = []
-        # train
-        for k, idx in k_list, range(len(k_list)):
-            b_value = self.centralized_compression_train(train_blocks[idx], k)
-            b_value_list.append(b_value)
+        test_accuracy_list = []
+        b_s_list = []
 
-        # compress images
-        compressed_image_list = []
-        for k, idx in k_list, range(len(k_list)):
-            compressed_image = self.centralized_compression(train_blocks[idx], b_value_list[idx])
-            compressed_image_list.append(compressed_image)
-
-            
-
+        for k, idx in zip(k_list, range(len(k_list))):
+            # For each sensor, determine bit allocation
+            bit_allocation_list = self.decentralized_compression_train(train_blocks, k)
+            compressed_trainX = self.decentralized_compression(train_blocks, bit_allocation_list)
+            compressed_testX = self.decentralized_compression(test_blocks, bit_allocation_list)
+            clf = MyDecentralized(K=3)
+            clf.train(compressed_trainX, trainY)
+            test_accuracy = clf.evaluate(compressed_testX, testY)
+            test_accuracy_list.append(test_accuracy)
+            b_s_list.append("")
 
         result = {'k': [], 'test_accuracy': [], 'b_s': []}
         return result
+
+    def decentralized_compression_train(self, X_block, b):
+        ''' Train decentralized compression parameters for four sensor blocks
+        Args:
+            X_block: list[np.array(N, d_s)] data matrices for each sensor
+            b: bit budget for each sensor
+            
+            Returns:
+            bit_allocation_list: list[list[]] array of bits allocated per feature for each sensor
+        '''
+        bit_allocation_list = []
+        for X, idx in zip(X_block, range(len(X_block))):
+            N, M = X.shape
+            bit_allocation = self.image_compression_train(X, b)
+            bit_allocation_list.append(bit_allocation)
+        return bit_allocation_list
+    
+    def decentralized_compression(self, X_block, bit_allocation_list):
+        ''' Apply decentralized compression to data X using bit_allocation for each sensor
+        Args:
+            X_block: list[np.array(N, d_s)] data matrices for each sensor
+            bit_allocation_list: list[list[]] array of bits allocated per feature for each sensor
+            
+            Returns:
+            X_decentralized_compressed: np.array(N, M) compressed data matrix, formatted as integers
+        '''
+        compressed_blocks = []
+        for X, idx in zip(X_block, range(len(X_block))):
+            bit_allocation = bit_allocation_list[idx]
+            X_compressed = self.image_compression(X, bit_allocation)
+            compressed_blocks.append(X_compressed)
+        X_compressed = np.hstack(compressed_blocks)
+        return X_compressed
 
     def run_decentralized_total(self, train_blocks, val_blocks, test_blocks, trainY, valY, testY, B_tot_list):
         """
